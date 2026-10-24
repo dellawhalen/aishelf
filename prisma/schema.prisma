@@ -1,0 +1,217 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+  brands    Brand[]
+  audits    Audit[]
+  recommendations Recommendation[]
+  followUps FollowUpAudit[]
+}
+
+model Brand {
+  id             String         @id @default(cuid())
+  organizationId String
+  name           String
+  createdAt      DateTime       @default(now())
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  products       Product[]
+  audits         Audit[]
+  recommendations Recommendation[]
+  followUps FollowUpAudit[]
+
+  @@index([organizationId])
+}
+
+model Product {
+  id             String   @id @default(cuid())
+  brandId        String
+  name           String
+  description    String   @default("")
+  price          Float?
+  category       String   @default("")
+  imageUrl       String   @default("")
+  specifications String   @default("{}")
+  requiredFields String   @default("[\"description\",\"price\",\"category\",\"imageUrl\"]")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  brand          Brand    @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  accuracyChecks AccuracyCheck[]
+
+  @@index([brandId])
+}
+
+model Audit {
+  id                  String                @id @default(cuid())
+  organizationId      String
+  brandId             String
+  sourceType          String
+  sourceName          String
+  collectionMethod    String
+  methodologyVersion  String                @default("1.0")
+  questionSetHash     String
+  sampleSize          Int
+  createdAt           DateTime              @default(now())
+  organization        Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  brand               Brand                 @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  responses           AuditResponse[]
+  accuracyChecks      AccuracyCheck[]
+  categoryScores      AuditCategoryScore[]
+  scoreSnapshot       BrandScoreSnapshot?
+  recommendations    Recommendation[]
+  productFieldSnapshots ProductFieldSnapshot[]
+
+  @@index([organizationId, brandId, createdAt])
+}
+
+model AuditResponse {
+  id             String              @id @default(cuid())
+  auditId        String
+  question       String
+  response       String
+  sourceName     String
+  collectionMethod String
+  observedAt     DateTime            @default(now())
+  brandMentioned Boolean
+  productId      String?
+  audit          Audit               @relation(fields: [auditId], references: [id], onDelete: Cascade)
+  competitorMentions CompetitorMention[]
+  accuracyChecks AccuracyCheck[]
+
+  @@index([auditId])
+}
+
+model CompetitorMention {
+  id            String        @id @default(cuid())
+  responseId    String
+  competitor    String
+  mentionCount  Int           @default(1)
+  response      AuditResponse @relation(fields: [responseId], references: [id], onDelete: Cascade)
+
+  @@index([responseId])
+}
+
+model AccuracyCheck {
+  id                String        @id @default(cuid())
+  auditId           String
+  responseId        String?
+  productId         String?
+  claim             String
+  verifiedValue     String
+  observedValue     String
+  outcome           String
+  discrepancyType   String        @default("")
+  severity          String        @default("medium")
+  suggestedCorrection String      @default("")
+  reviewStatus      String        @default("needs_review")
+  createdAt         DateTime      @default(now())
+  audit             Audit         @relation(fields: [auditId], references: [id], onDelete: Cascade)
+  response          AuditResponse? @relation(fields: [responseId], references: [id], onDelete: SetNull)
+  product           Product?      @relation(fields: [productId], references: [id], onDelete: SetNull)
+  recommendations  Recommendation[]
+
+  @@index([auditId])
+}
+
+model AuditCategoryScore {
+  id              String   @id @default(cuid())
+  auditId         String
+  category        String
+  score           Float?
+  evidenceCount   Int
+  calculation     String
+  audit           Audit    @relation(fields: [auditId], references: [id], onDelete: Cascade)
+
+  @@unique([auditId, category])
+}
+
+model ProductFieldSnapshot {
+  id          String  @id @default(cuid())
+  auditId     String
+  productId   String
+  productName String
+  fieldName   String
+  fieldValue  String
+  completed   Boolean
+  audit       Audit   @relation(fields: [auditId], references: [id], onDelete: Cascade)
+
+  @@index([auditId])
+}
+
+model BrandScoreSnapshot {
+  id                   String   @id @default(cuid())
+  auditId              String   @unique
+  organizationId       String
+  brandId              String
+  overallScore         Float?
+  classification       String
+  methodologyVersion   String
+  sourceType           String
+  sampleSize           Int
+  evidenceReferences   String
+  createdAt            DateTime @default(now())
+  audit                Audit    @relation(fields: [auditId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, brandId, createdAt])
+}
+
+model Recommendation {
+  id                String   @id @default(cuid())
+  organizationId    String
+  brandId           String
+  auditId           String
+  category          String
+  productId         String?
+  accuracyCheckId   String?  @unique
+  evidenceRef       String?  @unique
+  title             String
+  issue             String
+  supportingEvidence String
+  recommendedAction String
+  whyItMatters      String
+  priority          String
+  effort            String
+  approvalStatus    String   @default("pending")
+  completionStatus  String   @default("not_started")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  brand             Brand    @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  audit             Audit    @relation(fields: [auditId], references: [id], onDelete: Cascade)
+  statusChanges     RecommendationStatusChange[]
+  accuracyCheck    AccuracyCheck? @relation(fields: [accuracyCheckId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, brandId, createdAt])
+}
+
+model RecommendationStatusChange {
+  id               String         @id @default(cuid())
+  recommendationId String
+  approvalStatus   String
+  completionStatus String
+  changedAt        DateTime       @default(now())
+  recommendation  Recommendation @relation(fields: [recommendationId], references: [id], onDelete: Cascade)
+
+  @@index([recommendationId, changedAt])
+}
+
+model FollowUpAudit {
+  id             String       @id @default(cuid())
+  organizationId String
+  brandId        String
+  scheduledFor   DateTime
+  status         String       @default("scheduled")
+  createdAt      DateTime     @default(now())
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  brand          Brand        @relation(fields: [brandId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, brandId, scheduledFor])
+}
