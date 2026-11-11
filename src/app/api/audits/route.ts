@@ -3,7 +3,30 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getProductCompleteness } from "@/lib/products";
 import { calculateScores, METHODOLOGY_VERSION } from "@/lib/scoring";
-import { ensureLocalWorkspace, LOCAL_BRAND_ID, LOCAL_ORGANIZATION_ID } from "@/lib/workspace";
+import { getWorkspaceBrandAccess, LOCAL_ORGANIZATION_ID } from "@/lib/workspace";
+
+type AccuracyInput = {
+  productId: string;
+  claim: string;
+  observedValue: string;
+  verifiedValue: string;
+  outcome: "ACCURATE" | "INACCURATE" | "MISSING" | "UNVERIFIED";
+  discrepancyType: string;
+  severity: "low" | "medium" | "high";
+  suggestedCorrection: string;
+};
+
+type RecommendationInput = {
+  category: "accuracy" | "visibility" | "competitive" | "completeness";
+  productId: string | null;
+  title: string;
+  issue: string;
+  supportingEvidence: string;
+  recommendedAction: string;
+  whyItMatters: string;
+  priority: "low" | "medium" | "high";
+  effort: "low" | "medium" | "high";
+};
 
 type AuditBody = {
   sourceType: "SIMULATED" | "EXTERNAL";
@@ -13,21 +36,20 @@ type AuditBody = {
   response: string;
   brandMentioned: boolean;
   competitorMentions: Array<{ competitor: string; mentionCount: number }>;
-  accuracyCheck?: {
-    productId: string;
-    claim: string;
-    observedValue: string;
-    verifiedValue: string;
-    outcome: "ACCURATE" | "INACCURATE" | "MISSING" | "UNVERIFIED";
-    discrepancyType: string;
-    severity: "low" | "medium" | "high";
-    suggestedCorrection: string;
-  };
+  accuracyCheck?: AccuracyInput;
+  accuracyChecks?: AccuracyInput[];
+  recommendations?: RecommendationInput[];
 };
+
+function isNonEmptyText(value: unknown, maxLength: number) {
+  return typeof value === "string" && value.trim().length > 0 && value.length <= maxLength;
+}
 
 export async function POST(request: Request) {
   try {
-    await ensureLocalWorkspace();
+    const workspace = await getWorkspaceBrandAccess(request);
+    if (!workspace.authorized) return workspace.response;
+    const brandId = workspace.brandId;
     const body = await request.json() as AuditBody;
     const question = body.question?.trim();
     const responseText = body.response?.trim();
@@ -46,19 +68,23 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Competitor mentions must be provided as a list." }, { status: 400 });
     }
 
-    const product = body.accuracyCheck?.productId
-      ? await prisma.product.findFirst({
-        where: { id: body.accuracyCheck.productId, brandId: LOCAL_BRAND_ID },
-        select: { id: true },
-      })
-      : null;
-    if (body.accuracyCheck?.productId && !product) {
-      return NextResponse.json({ error: "The selected product does not belong to this workspace." }, { status: 400 });
+    if (body.accuracyCheck && body.accuracyChecks) {
+      return NextResponse.json({ error: "Use either one accuracy check or an accuracy-check list, not both." }, { status: 400 });
+    }
+    const accuracyChecks = body.accuracyChecks ?? (body.accuracyCheck ? [body.accuracyCheck] : []);
+    const recommendations = body.recommendations ?? [];
+    if (!Array.isArray(accuracyChecks) || accuracyChecks.length > 31) {
+      return NextResponse.json({ error: "An audit can include at most 31 product claim checks." }, { status: 400 });
+    }
+    if (!Array.isArray(recommendations) || recommendations.length > 20) {
+      return NextResponse.json({ error: "An audit can include at most 20 recommendations." }, { status: 400 });
     }
 
     const invalidCompetitor = body.competitorMentions.some((mention) =>
+      !mention ||
       typeof mention.competitor !== "string" ||
       mention.competitor.trim().length === 0 ||
+      mention.competitor.length > 160 ||
       !Number.isInteger(mention.mentionCount) ||
       mention.mentionCount <= 0
     );
@@ -66,27 +92,58 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Each competitor mention needs a name and positive whole-number count." }, { status: 400 });
     }
     const competitorMentions = body.competitorMentions;
-    const accuracy = body.accuracyCheck;
-    if (accuracy && (
-      !accuracy.productId ||
-      !accuracy.claim?.trim() ||
-      !accuracy.verifiedValue?.trim() ||
-      (accuracy.outcome !== "MISSING" && !accuracy.observedValue?.trim()) ||
-      !["ACCURATE", "INACCURATE", "MISSING", "UNVERIFIED"].includes(accuracy.outcome) ||
-      !["low", "medium", "high"].includes(accuracy.severity)
-    )) {
-      return NextResponse.json({ error: "A claim check requires a product, claim, verified value, valid outcome and severity; non-missing observations also need an observed value." }, { status: 400 });
+    const validOutcomes = ["ACCURATE", "INACCURATE", "MISSING", "UNVERIFIED"];
+    const validSeverities = ["low", "medium", "high"];
+    const invalidAccuracy = accuracyChecks.some((accuracy) =>
+      !accuracy || typeof accuracy.productId !== "string" ||
+      !isNonEmptyText(accuracy.claim, 500) ||
+      !isNonEmptyText(accuracy.verifiedValue, 1000) ||
+      typeof accuracy.observedValue !== "string" || accuracy.observedValue.length > 1000 ||
+      (accuracy.outcome !== "MISSING" && !accuracy.observedValue.trim()) ||
+      !validOutcomes.includes(accuracy.outcome) ||
+      !validSeverities.includes(accuracy.severity) ||
+      typeof accuracy.suggestedCorrection !== "string" || accuracy.suggestedCorrection.length > 1000
+    );
+    if (invalidAccuracy) {
+      return NextResponse.json({ error: "Each claim check requires a product, claim, verified value, valid outcome and severity; non-missing observations also need an observed value." }, { status: 400 });
+    }
+    const validCategories = ["accuracy", "visibility", "competitive", "completeness"];
+    const invalidRecommendation = recommendations.some((recommendation) =>
+      !recommendation ||
+      !validCategories.includes(recommendation.category) ||
+      (recommendation.productId !== null && typeof recommendation.productId !== "string") ||
+      !isNonEmptyText(recommendation.title, 160) ||
+      !isNonEmptyText(recommendation.issue, 1000) ||
+      !isNonEmptyText(recommendation.supportingEvidence, 1200) ||
+      !isNonEmptyText(recommendation.recommendedAction, 1200) ||
+      !isNonEmptyText(recommendation.whyItMatters, 1000) ||
+      !validSeverities.includes(recommendation.priority) ||
+      !validSeverities.includes(recommendation.effort)
+    );
+    if (invalidRecommendation) {
+      return NextResponse.json({ error: "Each recommendation requires complete text, a valid category, priority and effort." }, { status: 400 });
+    }
+    const productIds = [...new Set([
+      ...accuracyChecks.map((accuracy) => accuracy.productId),
+      ...recommendations.flatMap((recommendation) => recommendation.productId ? [recommendation.productId] : []),
+    ])];
+    const productsById = new Map((await prisma.product.findMany({
+      where: { id: { in: productIds }, brandId },
+      select: { id: true },
+    })).map((product) => [product.id, product]));
+    if (productIds.some((productId) => !productsById.has(productId))) {
+      return NextResponse.json({ error: "A selected product does not belong to this workspace." }, { status: 400 });
     }
 
     const responseId = randomUUID();
-    const accuracyCheckId = accuracy ? randomUUID() : null;
-    const products = await prisma.product.findMany({ where: { brandId: LOCAL_BRAND_ID } });
+    const accuracyCheckIds = accuracyChecks.map(() => randomUUID());
+    const products = await prisma.product.findMany({ where: { brandId } });
     const productCompleteness = getProductCompleteness(products);
     const scoreResult = calculateScores({
       sourceType,
       responses: [{ brandMentioned: Boolean(body.brandMentioned) }],
       competitorMentionCount: competitorMentions.reduce((total, item) => total + item.mentionCount, 0),
-      accuracyChecks: accuracy ? [{ outcome: accuracy.outcome }] : [],
+      accuracyChecks: accuracyChecks.map((accuracy) => ({ outcome: accuracy.outcome })),
       completedProductFields: productCompleteness.completed,
       requiredProductFields: productCompleteness.required,
     });
@@ -95,7 +152,7 @@ export async function POST(request: Request) {
     const audit = await prisma.audit.create({
       data: {
         organizationId: LOCAL_ORGANIZATION_ID,
-        brandId: LOCAL_BRAND_ID,
+        brandId,
         sourceType,
         sourceName: body.sourceName.trim(),
         collectionMethod: body.collectionMethod.trim(),
@@ -118,12 +175,12 @@ export async function POST(request: Request) {
             },
           },
         },
-        ...(accuracy ? {
+        ...(accuracyChecks.length ? {
           accuracyChecks: {
-            create: {
-              id: accuracyCheckId!,
+            create: accuracyChecks.map((accuracy, index) => ({
+              id: accuracyCheckIds[index],
               responseId,
-              productId: product?.id,
+              productId: productsById.get(accuracy.productId)?.id,
               claim: accuracy.claim.trim(),
               observedValue: accuracy.observedValue.trim(),
               verifiedValue: accuracy.verifiedValue.trim(),
@@ -131,7 +188,24 @@ export async function POST(request: Request) {
               discrepancyType: accuracy.discrepancyType || "unspecified",
               severity: accuracy.severity,
               suggestedCorrection: accuracy.suggestedCorrection?.trim() ?? "",
-            },
+            })),
+          },
+        } : {}),
+        ...(recommendations.length ? {
+          recommendations: {
+            create: recommendations.map((recommendation) => ({
+              organizationId: LOCAL_ORGANIZATION_ID,
+              brandId,
+              category: recommendation.category,
+              productId: recommendation.productId ? productsById.get(recommendation.productId)?.id : null,
+              title: recommendation.title.trim(),
+              issue: recommendation.issue.trim(),
+              supportingEvidence: recommendation.supportingEvidence.trim(),
+              recommendedAction: recommendation.recommendedAction.trim(),
+              whyItMatters: recommendation.whyItMatters.trim(),
+              priority: recommendation.priority,
+              effort: recommendation.effort,
+            })),
           },
         } : {}),
         categoryScores: {
@@ -154,7 +228,7 @@ export async function POST(request: Request) {
         scoreSnapshot: {
           create: {
             organizationId: LOCAL_ORGANIZATION_ID,
-            brandId: LOCAL_BRAND_ID,
+            brandId,
             overallScore: scoreResult.overall,
             classification: scoreResult.classification,
             methodologyVersion: METHODOLOGY_VERSION,
@@ -162,7 +236,7 @@ export async function POST(request: Request) {
             sampleSize: 1,
             evidenceReferences: JSON.stringify({
               responseIds: [responseId],
-              accuracyCheckIds: accuracyCheckId ? [accuracyCheckId] : [],
+              accuracyCheckIds,
               productIds: products.map((item) => item.id),
             }),
           },

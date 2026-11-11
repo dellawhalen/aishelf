@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { ensureLocalWorkspace, LOCAL_BRAND_ID } from "@/lib/workspace";
+import { getWorkspaceBrandAccess } from "@/lib/workspace";
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
-    await ensureLocalWorkspace();
+    const workspace = await getWorkspaceBrandAccess(request);
+    if (!workspace.authorized) return workspace.response;
+    const brandId = workspace.brandId;
     const { id } = await context.params;
     const body = await request.json() as {
       name?: string; description?: string; price?: number | null; category?: string; imageUrl?: string;
@@ -22,8 +24,23 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     } catch {
       return NextResponse.json({ error: "Specifications must be a valid JSON object." }, { status: 400 });
     }
-    const existing = await prisma.product.findFirst({ where: { id, brandId: LOCAL_BRAND_ID }, select: { id: true } });
+    const existing = await prisma.product.findFirst({
+      where: { id, brandId },
+      select: { id: true, requiredFields: true },
+    });
     if (!existing) return NextResponse.json({ error: "Product not found." }, { status: 404 });
+    let existingRequiredFields: unknown = [];
+    try {
+      existingRequiredFields = JSON.parse(existing.requiredFields);
+    } catch (error) {
+      console.error("Existing product required fields could not be read.", error);
+      return NextResponse.json({ error: "Existing product completeness rules could not be read." }, { status: 500 });
+    }
+    const nestedSpecificationFields = Array.isArray(existingRequiredFields)
+      ? existingRequiredFields.filter((field): field is string =>
+        typeof field === "string" && field.startsWith("specifications."),
+      )
+      : [];
     const product = await prisma.product.update({
       where: { id: existing.id },
       data: {
@@ -33,7 +50,14 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
         category: body.category?.trim() ?? "",
         imageUrl: body.imageUrl?.trim() ?? "",
         specifications: JSON.stringify(specifications),
-        requiredFields: JSON.stringify(["description", "price", "category", "imageUrl", ...(body.requiresSpecifications ? ["specifications"] : [])]),
+        requiredFields: JSON.stringify([
+          "description",
+          "price",
+          "category",
+          "imageUrl",
+          ...(body.requiresSpecifications ? ["specifications"] : []),
+          ...nestedSpecificationFields,
+        ]),
       },
     });
     return NextResponse.json({ product });

@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { ensureLocalWorkspace, LOCAL_BRAND_ID, LOCAL_ORGANIZATION_ID } from "@/lib/workspace";
+import { getWorkspaceBrandAccess, LOCAL_ORGANIZATION_ID } from "@/lib/workspace";
 
 export async function POST(request: Request) {
   try {
-    await ensureLocalWorkspace();
+    const workspace = await getWorkspaceBrandAccess(request);
+    if (!workspace.authorized) return workspace.response;
+    const brandId = workspace.brandId;
     const { scheduledFor } = await request.json() as { scheduledFor?: string };
     const date = scheduledFor ? new Date(scheduledFor) : null;
     if (!date || !Number.isFinite(date.getTime()) || date.getTime() <= Date.now()) {
@@ -13,7 +15,7 @@ export async function POST(request: Request) {
     const followUp = await prisma.followUpAudit.create({
       data: {
         organizationId: LOCAL_ORGANIZATION_ID,
-        brandId: LOCAL_BRAND_ID,
+        brandId,
         scheduledFor: date,
       },
     });

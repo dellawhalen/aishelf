@@ -1,18 +1,25 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getProductCompleteness } from "@/lib/products";
-import { ensureLocalWorkspace, LOCAL_BRAND_ID, LOCAL_ORGANIZATION_ID } from "@/lib/workspace";
+import { getWorkspaceBrandAccess, LOCAL_ORGANIZATION_ID } from "@/lib/workspace";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    await ensureLocalWorkspace();
-    const [brand, audits, recommendations, followUps] = await Promise.all([
+    const workspace = await getWorkspaceBrandAccess(request);
+    if (!workspace.authorized) return workspace.response;
+    const brandId = workspace.brandId;
+    const [brand, brands, audits, recommendations, followUps] = await Promise.all([
       prisma.brand.findFirst({
-        where: { id: LOCAL_BRAND_ID, organizationId: LOCAL_ORGANIZATION_ID },
+        where: { id: brandId, organizationId: LOCAL_ORGANIZATION_ID },
         include: { products: { orderBy: { updatedAt: "desc" } } },
       }),
+      prisma.brand.findMany({
+        where: { organizationId: LOCAL_ORGANIZATION_ID },
+        orderBy: { createdAt: "asc" },
+        select: { id: true, name: true },
+      }),
       prisma.audit.findMany({
-        where: { organizationId: LOCAL_ORGANIZATION_ID, brandId: LOCAL_BRAND_ID },
+        where: { organizationId: LOCAL_ORGANIZATION_ID, brandId },
         orderBy: { createdAt: "desc" },
         take: 20,
         include: {
@@ -24,12 +31,12 @@ export async function GET() {
         },
       }),
       prisma.recommendation.findMany({
-        where: { organizationId: LOCAL_ORGANIZATION_ID, brandId: LOCAL_BRAND_ID },
+        where: { organizationId: LOCAL_ORGANIZATION_ID, brandId },
         orderBy: { createdAt: "desc" },
         include: { statusChanges: { orderBy: { changedAt: "desc" }, take: 5 } },
       }),
       prisma.followUpAudit.findMany({
-        where: { organizationId: LOCAL_ORGANIZATION_ID, brandId: LOCAL_BRAND_ID },
+        where: { organizationId: LOCAL_ORGANIZATION_ID, brandId },
         orderBy: { scheduledFor: "asc" },
       }),
     ]);
@@ -53,6 +60,7 @@ export async function GET() {
 
     return NextResponse.json({
       brand: { id: brand.id, name: brand.name },
+      brands,
       products: brand.products,
       latestAudit: latest,
       history: audits.map((audit) => ({

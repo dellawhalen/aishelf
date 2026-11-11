@@ -1,19 +1,21 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { ensureLocalWorkspace, LOCAL_BRAND_ID } from "@/lib/workspace";
+import { getWorkspaceBrandAccess } from "@/lib/workspace";
 
 const statuses = new Set(["needs_review", "approved", "rejected", "resolved"]);
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
-    await ensureLocalWorkspace();
+    const workspace = await getWorkspaceBrandAccess(request);
+    if (!workspace.authorized) return workspace.response;
+    const brandId = workspace.brandId;
     const { id } = await context.params;
     const { reviewStatus } = await request.json() as { reviewStatus?: string };
     if (!reviewStatus || !statuses.has(reviewStatus)) {
       return NextResponse.json({ error: "Unsupported issue review status." }, { status: 400 });
     }
     const issue = await prisma.accuracyCheck.findFirst({
-      where: { id, audit: { brandId: LOCAL_BRAND_ID } },
+      where: { id, audit: { brandId } },
       select: { id: true },
     });
     if (!issue) return NextResponse.json({ error: "Issue not found." }, { status: 404 });

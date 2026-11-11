@@ -1,13 +1,15 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { ensureLocalWorkspace, LOCAL_BRAND_ID, LOCAL_ORGANIZATION_ID } from "@/lib/workspace";
+import { getWorkspaceBrandAccess, LOCAL_ORGANIZATION_ID } from "@/lib/workspace";
 
 const approvalStatuses = new Set(["pending", "approved", "rejected"]);
 const completionStatuses = new Set(["not_started", "in_progress", "implemented"]);
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
-    await ensureLocalWorkspace();
+    const workspace = await getWorkspaceBrandAccess(request);
+    if (!workspace.authorized) return workspace.response;
+    const brandId = workspace.brandId;
     const { id } = await context.params;
     const body = await request.json() as { approvalStatus?: string; completionStatus?: string };
     if (
@@ -17,7 +19,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       return NextResponse.json({ error: "Unsupported recommendation status." }, { status: 400 });
     }
     const existing = await prisma.recommendation.findFirst({
-      where: { id, organizationId: LOCAL_ORGANIZATION_ID, brandId: LOCAL_BRAND_ID },
+      where: { id, organizationId: LOCAL_ORGANIZATION_ID, brandId },
       select: { id: true },
     });
     if (!existing) return NextResponse.json({ error: "Recommendation not found." }, { status: 404 });
