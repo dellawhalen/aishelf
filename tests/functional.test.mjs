@@ -86,7 +86,7 @@ before(async () => {
   };
   const migration = spawnSync(
     process.execPath,
-    ["node_modules/prisma/build/index.js", "db", "push", "--skip-generate"],
+    ["node_modules/prisma/build/index.js", "db", "push"],
     { cwd: projectRoot, env: environment, encoding: "utf8" },
   );
   if (migration.status !== 0) {
