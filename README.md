@@ -131,3 +131,31 @@ AISHELF_MAISON_ELLE_DATASET="/Users/dellawhalen/Downloads/aishelf_maison_elle_te
 The importer adds the products, synthetic observations (labeled `SIMULATED`), claim checks, scores, recommendations, status history, and scheduled follow-up to the configured local database. It stops without changes if MAISON ELLE is already present. Switch to MAISON ELLE using the workspace selector in the app. No schema migration is required; the existing models support multiple brands.
 
 GitHub Actions runs these checks for pushes and pull requests.
+
+## Phase 2 Prototype Demonstration
+
+**Live prototype:** https://aishelf-chi.vercel.app/
+
+**Access:** Invitation-only through GitHub OAuth. Approved users must have their numeric GitHub account ID included in the server-side allowlist.
+
+### Demonstration workflow
+
+1. Sign in using an approved GitHub account.
+2. Select the fictional MAISON ELLE clothing brand.
+3. Explore the dashboard and review the brand visibility scoring categories.
+4. Examine the product catalog and existing audit evidence.
+5. Record a new simulated shopping-response audit.
+6. Use **Analyze with AI** to generate suggested findings for human review.
+7. Review the findings and choose which information to save.
+8. Examine the updated audit evidence and any resulting recommendations.
+9. Update a recommendation's status or schedule a follow-up.
+
+### Important limitations
+
+- MAISON ELLE is a fictional brand used for prototype testing.
+- AIShelf does not automatically collect responses from external AI-shopping platforms.
+- The visibility score is a deterministic diagnostic, not a verified measure of market share or commercial performance.
+- AI-generated suggestions require human review before saving.
+- External product integrations and automated notifications are not implemented.
+
+**Access for evaluation:** The instructor must be added to the approved GitHub account allowlist before testing the hosted prototype.
