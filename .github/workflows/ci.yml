@@ -7,17 +7,38 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: aishelf
+          POSTGRES_USER: aishelf
+          POSTGRES_PASSWORD: aishelf
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U aishelf -d aishelf"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://aishelf:aishelf@localhost:5432/aishelf?schema=public
+      DIRECT_URL: postgresql://aishelf:aishelf@localhost:5432/aishelf?schema=public
+      AISHELF_TEST_DATABASE_URL: postgresql://aishelf:aishelf@localhost:5432/aishelf?schema=public
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
       - run: cp .env.example .env
       - run: npm ci
       - run: npm run db:generate
       - run: npm run db:deploy
       - run: npm test
+      - run: npm run test:functional
+      - run: npx next typegen
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run build
+      

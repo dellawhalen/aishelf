@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { ensureLocalWorkspace, LOCAL_BRAND_ID } from "@/lib/workspace";
+import { getWorkspaceBrandAccess } from "@/lib/workspace";
 
 export async function POST(request: Request) {
   try {
-    await ensureLocalWorkspace();
+    const workspace = await getWorkspaceBrandAccess(request);
+    if (!workspace.authorized) return workspace.response;
+    const brandId = workspace.brandId;
     const body = await request.json() as {
       name?: string;
       description?: string;
@@ -29,7 +31,7 @@ export async function POST(request: Request) {
     }
     const product = await prisma.product.create({
       data: {
-        brandId: LOCAL_BRAND_ID,
+        brandId,
         name,
         description: body.description?.trim() ?? "",
         price: body.price ?? null,

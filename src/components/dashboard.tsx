@@ -11,6 +11,7 @@ import {
   Clock3,
   Database,
   FileSearch,
+  LogOut,
   Plus,
   Search,
   Shirt,
@@ -20,8 +21,11 @@ import {
   X,
 } from "lucide-react";
 import Link from "next/link";
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { signOutAction } from "@/app/auth-actions";
+import { getProductCompleteness } from "@/lib/products";
 import { CATEGORY_CALCULATIONS } from "@/lib/scoring";
+import type { AiAuditResult } from "@/lib/ai-audit-schema";
 
 type CategoryKey = "visibility" | "accuracy" | "competitive" | "completeness";
 type CategoryScore = { id: string; category: CategoryKey; score: number | null; evidenceCount: number; calculation: string };
@@ -65,10 +69,25 @@ type HistoryItem = {
   questionSetHash: string; methodologyVersion: string; evidence: AuditEvidenceSummary;
 };
 type DashboardData = {
+  brands: Array<{ id: string; name: string }>;
   brand: { id: string; name: string }; products: Product[]; latestAudit: Audit | null; history: HistoryItem[];
   previousComparable: { id: string; score: number | null } | null; recommendations: Recommendation[];
   followUps: FollowUp[];
   catalogCompleteness: { completed: number; required: number };
+};
+type AiAnalysis = {
+  result: AiAuditResult;
+  usage: { inputTokens: number; outputTokens: number; totalTokens: number; cached: boolean };
+  model: string;
+};
+type AiUsageSummary = {
+  applicationBudgetUsd: number;
+  demoReserveUsd: number;
+  estimatedSpendUsd: number;
+  reservedSpendUsd: number;
+  remainingBudgetUsd: number;
+  requestsPerUserThisHour: Array<{ label: string; isCurrentUser: boolean; requestCount: number }>;
+  requestLimitPerUserPerHour: number;
 };
 
 const categories: Array<{
@@ -109,6 +128,10 @@ function formatDate(date: string | null | undefined) {
   return date ? new Intl.DateTimeFormat("en", { month: "short", day: "numeric", year: "numeric" }).format(new Date(date)) : "Not yet audited";
 }
 
+function formatAiDollars(value: number) {
+  return `$${value.toFixed(value < 1 ? 4 : 2)}`;
+}
+
 function ScoreRing({ score }: { score: number | null }) {
   const radius = 68;
   const circumference = 2 * Math.PI * radius;
@@ -129,6 +152,11 @@ function ScoreRing({ score }: { score: number | null }) {
 
 export default function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
+  const [selectedBrandId, setSelectedBrandId] = useState(() =>
+    typeof window === "undefined"
+      ? "local-brand"
+      : window.localStorage.getItem("aishelf-selected-brand") ?? "local-brand",
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -146,10 +174,40 @@ export default function Dashboard() {
   const [compareId, setCompareId] = useState("");
   const [saving, setSaving] = useState(false);
   const [accuracyFilter, setAccuracyFilter] = useState("all");
+  const [aiAnalysis, setAiAnalysis] = useState<AiAnalysis | null>(null);
+  const [aiAnalyzing, setAiAnalyzing] = useState(false);
+  const [aiUsage, setAiUsage] = useState<AiUsageSummary | null>(null);
+  const [aiUsageError, setAiUsageError] = useState("");
+  const [aiUsageLoading, setAiUsageLoading] = useState(false);
+  const [aiClaimSelected, setAiClaimSelected] = useState<boolean[]>([]);
+  const [aiClaimOutcomes, setAiClaimOutcomes] = useState<string[]>([]);
+  const [aiMissingSelected, setAiMissingSelected] = useState<boolean[]>([]);
+  const [aiRecommendationSelected, setAiRecommendationSelected] = useState<boolean[]>([]);
+  const [aiCompetitorSelected, setAiCompetitorSelected] = useState<boolean[]>([]);
+  const aiRequestId = useRef(0);
+
+  function clearAiReview() {
+    aiRequestId.current += 1;
+    setAiAnalyzing(false);
+    setAiAnalysis(null);
+    setAiClaimSelected([]);
+    setAiClaimOutcomes([]);
+    setAiMissingSelected([]);
+    setAiRecommendationSelected([]);
+    setAiCompetitorSelected([]);
+  }
+
+  function closeAuditForm() {
+    setAuditOpen(false);
+    clearAiReview();
+  }
 
   const loadData = useCallback(async () => {
     try {
-      const response = await fetch("/api/dashboard", { cache: "no-store" });
+      const response = await fetch("/api/dashboard", {
+        cache: "no-store",
+        headers: { "x-aishelf-brand-id": selectedBrandId },
+      });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error ?? "Dashboard could not be loaded.");
       setData(body as DashboardData);
@@ -159,11 +217,32 @@ export default function Dashboard() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [selectedBrandId]);
 
-  // Initial data is fetched asynchronously after the first render.
+  // Dashboard data is fetched after hydration so the browser's saved brand can be selected.
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { void loadData(); }, [loadData]);
+
+  const loadAiUsage = useCallback(async () => {
+    setAiUsageLoading(true);
+    try {
+      const response = await fetch("/api/ai-usage", { cache: "no-store" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? "AI usage could not be loaded.");
+      setAiUsage(body as AiUsageSummary);
+      setAiUsageError("");
+    } catch (usageError) {
+      setAiUsage(null);
+      setAiUsageError(usageError instanceof Error ? usageError.message : "AI usage could not be loaded.");
+    } finally {
+      setAiUsageLoading(false);
+    }
+  }, []);
+
+  function openAuditForm() {
+    setAuditOpen(true);
+    void loadAiUsage();
+  }
 
   const latest = data?.latestAudit ?? null;
   const overall = latest?.scoreSnapshot?.overallScore ?? null;
@@ -171,15 +250,15 @@ export default function Dashboard() {
     ? overall - data.previousComparable.score
     : null;
   const incompleteProducts = useMemo(() => data?.products.filter((product) => {
-    const fields = [product.description, product.category, product.imageUrl];
-    return !fields.every((field) => field.trim()) || product.price == null;
+    const completeness = getProductCompleteness([product]);
+    return completeness.completed < completeness.required;
   }) ?? [], [data]);
   const activeHistory = data?.history.find((item) => item.id === compareId) ?? null;
 
   async function sendJson(url: string, method: string, payload: unknown) {
     const response = await fetch(url, {
       method,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-aishelf-brand-id": selectedBrandId },
       body: JSON.stringify(payload),
     });
     const body = await response.json();
@@ -192,11 +271,26 @@ export default function Dashboard() {
     setSaving(true);
     setError("");
     try {
-      const competitors = auditForm.competitor.trim()
-        ? [{ competitor: auditForm.competitor.trim(), mentionCount: Number(auditForm.competitorCount) }]
-        : [];
-      const accuracyCheck = auditForm.addCheck && auditForm.productId
-        ? {
+      const competitorCounts = new Map<string, { competitor: string; mentionCount: number }>();
+      if (auditForm.competitor.trim()) {
+        const competitor = auditForm.competitor.trim();
+        competitorCounts.set(competitor.toLocaleLowerCase(), {
+          competitor,
+          mentionCount: Number(auditForm.competitorCount),
+        });
+      }
+      aiAnalysis?.result.competitorMentions.forEach((mention, index) => {
+        if (!aiCompetitorSelected[index]) return;
+        const key = mention.competitor.toLocaleLowerCase();
+        const existing = competitorCounts.get(key);
+        competitorCounts.set(key, {
+          competitor: existing?.competitor ?? mention.competitor,
+          mentionCount: (existing?.mentionCount ?? 0) + mention.mentionCount,
+        });
+      });
+      const accuracyChecks = [
+        ...(auditForm.addCheck && auditForm.productId
+          ? [{
           productId: auditForm.productId,
           claim: auditForm.claim,
           observedValue: auditForm.observedValue,
@@ -205,17 +299,82 @@ export default function Dashboard() {
           discrepancyType: auditForm.discrepancyType,
           severity: auditForm.severity,
           suggestedCorrection: auditForm.suggestedCorrection,
-        }
-        : undefined;
-      await sendJson("/api/audits", "POST", { ...auditForm, competitorMentions: competitors, accuracyCheck });
+          }]
+          : []),
+        ...(aiAnalysis?.result.claimFindings.flatMap((finding, index) =>
+          aiClaimSelected[index] && finding.productId
+            ? [{
+              productId: finding.productId,
+              claim: finding.claim,
+              observedValue: finding.observedValue || finding.evidenceQuote,
+              verifiedValue: finding.verifiedValue || "Not provided in the catalog",
+              outcome: aiClaimOutcomes[index] ?? "UNVERIFIED",
+              discrepancyType: finding.discrepancyType,
+              severity: finding.severity,
+              suggestedCorrection: finding.suggestedCorrection,
+            }]
+            : [],
+        ) ?? []),
+        ...(aiAnalysis?.result.missingInformation.flatMap((finding, index) =>
+          aiMissingSelected[index]
+            ? [{
+              productId: finding.productId,
+              claim: `Missing product information: ${finding.fieldName}`,
+              observedValue: "",
+              verifiedValue: "Not provided in the catalog",
+              outcome: "MISSING",
+              discrepancyType: "missing_information",
+              severity: "low",
+              suggestedCorrection: finding.recommendation,
+            }]
+            : [],
+        ) ?? []),
+      ];
+      const recommendations = aiAnalysis?.result.recommendations.filter((_, index) =>
+        aiRecommendationSelected[index]
+      ) ?? [];
+      await sendJson("/api/audits", "POST", {
+        ...auditForm,
+        competitorMentions: [...competitorCounts.values()],
+        ...(accuracyChecks.length ? { accuracyChecks } : {}),
+        ...(recommendations.length ? { recommendations } : {}),
+      });
       setAuditForm(emptyAuditForm);
       setAuditOpen(false);
+      clearAiReview();
       setNotice("Evidence saved. Scores were calculated from this audit and the current product catalog.");
       await loadData();
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "Audit evidence could not be saved.");
     } finally {
       setSaving(false);
+    }
+
+  }
+
+  async function analyzeAuditWithAi() {
+    const requestId = ++aiRequestId.current;
+    setAiAnalyzing(true);
+    setError("");
+    try {
+      const analysis = await sendJson("/api/ai-audit", "POST", {
+        question: auditForm.question,
+        response: auditForm.response,
+      }) as AiAnalysis;
+      if (requestId !== aiRequestId.current) return;
+      setAiAnalysis(analysis);
+      setAiClaimSelected(analysis.result.claimFindings.map(() => false));
+      setAiClaimOutcomes(analysis.result.claimFindings.map(() => "UNVERIFIED"));
+      setAiMissingSelected(analysis.result.missingInformation.map(() => false));
+      setAiRecommendationSelected(analysis.result.recommendations.map(() => false));
+      setAiCompetitorSelected(analysis.result.competitorMentions.map(() => false));
+    } catch (analysisError) {
+      if (requestId === aiRequestId.current) {
+        setError(analysisError instanceof Error ? analysisError.message : "AI analysis could not be completed.");
+      }
+    } finally {
+      if (requestId === aiRequestId.current) setAiAnalyzing(false);
+      void loadAiUsage();
     }
   }
 
@@ -305,6 +464,17 @@ export default function Dashboard() {
     setScheduleOpen(true);
   }
 
+  function selectBrand(brandId: string) {
+    window.localStorage.setItem("aishelf-selected-brand", brandId);
+    setSelectedBrandId(brandId);
+    setLoading(true);
+    setData(null);
+    setError("");
+    setSelectedIssue(null);
+    setAuditForm(emptyAuditForm);
+    clearAiReview();
+  }
+
   function editProduct(product: Product) {
     setEditingProduct(product);
     setProductForm({
@@ -314,7 +484,7 @@ export default function Dashboard() {
       category: product.category,
       imageUrl: product.imageUrl,
       specifications: product.specifications,
-      requiresSpecifications: JSON.parse(product.requiredFields).includes("specifications"),
+      requiresSpecifications: JSON.parse(product.requiredFields).some((field: string) => field.startsWith("specifications")),
     });
     setProductOpen(true);
   }
@@ -329,11 +499,6 @@ export default function Dashboard() {
           <span className="brand-symbol"><span /></span>
           <span>ai<span className="brand-light">shelf</span></span>
         </a>
-        <div className="workspace-switcher">
-          <div className="workspace-avatar">Y</div>
-          <div className="workspace-name"><span>Workspace</span><strong>{data?.brand.name ?? "Your brand"}</strong></div>
-          <ChevronDown size={15} />
-        </div>
         <span className="nav-caption">WORKSPACE</span>
         <nav className="main-nav" aria-label="Main navigation">
           {[
@@ -358,9 +523,23 @@ export default function Dashboard() {
         <header className="topbar">
           <div className="breadcrumb">Workspace <span>/</span> <strong>{section}</strong></div>
           <div className="top-actions">
+            <label className="brand-workspace-select">
+              <span>Brand</span>
+              <select
+                aria-label="Select brand workspace"
+                value={data?.brands.some((brand) => brand.id === selectedBrandId) ? selectedBrandId : data?.brand.id ?? "local-brand"}
+                onChange={(event) => selectBrand(event.target.value)}
+              >
+                {(data?.brands ?? [{ id: "local-brand", name: "Your brand" }]).map((brand) => (
+                  <option key={brand.id} value={brand.id}>{brand.name}</option>
+                ))}
+              </select>
+            </label>
             <span className="data-badge"><span /> Local data</span>
             <button className="icon-button" aria-label="Search"><Search size={18} /></button>
-            <button className="top-avatar" aria-label="Demo profile">D</button>
+            <form action={signOutAction}>
+              <button className="icon-button" aria-label="Sign out" title="Sign out" type="submit"><LogOut size={18} /></button>
+            </form>
           </div>
         </header>
 
@@ -373,7 +552,7 @@ export default function Dashboard() {
             <>
               <div className="page-heading">
                 <div><div className="eyebrow"><span className="eyebrow-dot" /> BRAND INTELLIGENCE</div><h1>Your visibility, <em>in focus.</em></h1><p>A clearer picture of how AI shopping experiences understand your brand.</p></div>
-                <button className="button primary" onClick={() => { setAuditForm(emptyAuditForm); setAuditOpen(true); }}><Plus size={16} /> Record audit evidence</button>
+                <button className="button primary" onClick={() => { setAuditForm(emptyAuditForm); clearAiReview(); openAuditForm(); }}><Plus size={16} /> Record audit evidence</button>
               </div>
 
               <section className="score-hero">
@@ -447,7 +626,7 @@ export default function Dashboard() {
               <div className="page-heading compact-heading"><div><div className="eyebrow"><span className="eyebrow-dot" /> CATALOG HEALTH</div><h1>Product <em>catalog.</em></h1><p>Keep verified source information clear, complete, and ready to audit.</p></div><button className="button primary" onClick={() => { setEditingProduct(null); setProductForm({ name: "", description: "", price: "", category: "", imageUrl: "", specifications: "{}", requiresSpecifications: false }); setProductOpen(true); }}><Plus size={16} /> Add product</button></div>
               <section className="catalog-summary"><div className="summary-value">{data?.products.length ?? 0}</div><div><strong>Products in your catalog</strong><span>Completeness is evaluated against applicable fields at the time of each audit.</span></div><div className="catalog-percent">{data?.catalogCompleteness.required ? `${Math.round(data.catalogCompleteness.completed / data.catalogCompleteness.required * 100)}%` : "—"}<small>FIELD COVERAGE</small></div></section>
               {data?.products.length ? <div className="product-list">{data.products.map((product) => {
-                const missing = [!product.description && "description", product.price == null && "price", !product.category && "category", !product.imageUrl && "image"].filter(Boolean);
+                const missing = getProductCompleteness([product]).snapshots.filter((field) => !field.completed);
                 return <article className="product-card" key={product.id}>
                   <div className="product-image" role={product.imageUrl ? "img" : undefined} aria-label={product.imageUrl ? `${product.name} product image` : undefined} style={product.imageUrl ? { backgroundImage: `url("${product.imageUrl}")`, backgroundPosition: "center", backgroundSize: "cover" } : undefined}>{product.imageUrl ? null : <Database size={20} />}</div>
                   <div className="product-main"><strong>{product.name}</strong><span>{product.category || "Category missing"} {product.price != null && `· $${product.price.toFixed(2)}`}</span><small>{product.description || "Description missing"}</small></div>
@@ -477,14 +656,14 @@ export default function Dashboard() {
                   </div></div>
                   <div className="completion-track"><span>{item.completionStatus.replace("_", " ")}</span><span className={`completion-indicator ${item.completionStatus}`} /><span className="status-history">{item.statusChanges.length} status update{item.statusChanges.length === 1 ? "" : "s"}</span></div>
                 </article>
-              ))}</div> : <div className="empty-state"><span className="empty-art"><Sparkles size={24} /></span><h2>Useful advice starts with real evidence.</h2><p>Record a claim that needs review, then build an action plan from that finding.</p><button className="button primary" onClick={() => setAuditOpen(true)}>Record audit evidence <ArrowRight size={15} /></button></div>}
+              ))}</div> : <div className="empty-state"><span className="empty-art"><Sparkles size={24} /></span><h2>Useful advice starts with real evidence.</h2><p>Record a claim that needs review, then build an action plan from that finding.</p><button className="button primary" onClick={openAuditForm}>Record audit evidence <ArrowRight size={15} /></button></div>}
               <p className="method-note"><CircleHelp size={13} /> Recommendations do not publish website changes and cannot guarantee better visibility or external AI recommendations.</p>
             </>
           )}
 
           {section === "Score history" && (
             <>
-              <div className="page-heading compact-heading"><div><div className="eyebrow"><span className="eyebrow-dot" /> AUDIT TRAIL</div><h1>Progress, <em>with context.</em></h1><p>Compare only audits captured with matching sources, methods, and tested questions.</p></div><button className="button primary" onClick={() => setAuditOpen(true)}><Plus size={16} /> Record follow-up</button></div>
+              <div className="page-heading compact-heading"><div><div className="eyebrow"><span className="eyebrow-dot" /> AUDIT TRAIL</div><h1>Progress, <em>with context.</em></h1><p>Compare only audits captured with matching sources, methods, and tested questions.</p></div><button className="button primary" onClick={openAuditForm}><Plus size={16} /> Record follow-up</button></div>
               <section className="history-panel">
                 <div className="panel-heading"><div><span className="eyebrow">OVERALL BRAND SCORE</span><h2>Audit snapshots</h2></div><span className="history-label"><span /> Stored evidence only</span></div>
                 {data?.history.length ? <div className="history-chart" aria-label="Historical score chart">{data.history.slice().reverse().map((item) => <button key={item.id} className={`history-bar-wrap ${compareId === item.id ? "selected" : ""}`} onClick={() => setCompareId(item.id)}>
@@ -525,7 +704,7 @@ export default function Dashboard() {
               {latest?.accuracyChecks.length ? latest.accuracyChecks.filter((check) => accuracyFilter === "all" || check.discrepancyType === accuracyFilter || (accuracyFilter === "unverified" && check.outcome === "UNVERIFIED")).map((check) => <button className="finding-row" key={check.id} onClick={() => setSelectedIssue(check)}><span className={`finding-indicator ${check.outcome.toLowerCase()}`} /><span><strong>{check.product?.name ?? "Product"} · {check.discrepancyType.replaceAll("_", " ")}</strong><small>{check.claim} · {check.severity} severity · {check.reviewStatus.replaceAll("_", " ")}</small></span><ArrowRight size={15} /></button>) : <p className="empty-message">No claim checks in this audit. Missing and unverified data are not counted as factual contradictions.</p>}</div>}
             {selectedCategory === "competitive" && <div className="drawer-section"><div className="drawer-section-title"><h3>Relative sampled mentions</h3><span>{latest?.responses.length ?? 0} prompts</span></div>{latest?.responses.map((item) => <div className="competitor-row" key={item.id}><span>{item.question}</span><div><b>{item.brandMentioned ? data?.brand.name ?? "Brand" : "Brand absent"}</b>{item.competitorMentions.map((mention) => <i key={mention.id}>{mention.competitor} × {mention.mentionCount}</i>)}</div></div>)}<p className="caveat">This sample is not market share or a comprehensive AI search ranking.</p></div>}
             {selectedCategory === "completeness" && <div className="drawer-section"><div className="drawer-section-title"><h3>Audited product fields</h3><span>{latest?.productFieldSnapshots.length ?? 0} fields</span></div>{latest?.productFieldSnapshots.length ? latest.productFieldSnapshots.map((field) => <div className="field-row" key={field.id}><span className={field.completed ? "field-check checked" : "field-check"}>{field.completed ? <Check size={11} /> : <X size={11} />}</span><span><strong>{field.productName}</strong><small>{field.fieldName}</small></span><em>{field.completed ? field.fieldValue || "Complete" : "Missing"}</em></div>) : <p className="empty-message">No product fields were present in this audit snapshot.</p>}<button className="text-link" onClick={() => { setSelectedCategory(null); setSection("Products"); }}>Open product catalog <ArrowRight size={13} /></button></div>}
-            <div className="drawer-foot"><span>Observation source: <strong>{latest ? `${latest.sourceType === "SIMULATED" ? "Simulated" : "External"} · ${latest.sourceName}` : "None recorded"}</strong></span><button className="button outline-button" onClick={() => { setSelectedCategory(null); setAuditOpen(true); }}>Add audit evidence</button></div>
+            <div className="drawer-foot"><span>Observation source: <strong>{latest ? `${latest.sourceType === "SIMULATED" ? "Simulated" : "External"} · ${latest.sourceName}` : "None recorded"}</strong></span><button className="button outline-button" onClick={() => { setSelectedCategory(null); openAuditForm(); }}>Add audit evidence</button></div>
           </section>
         </div>
       )}
@@ -550,14 +729,92 @@ export default function Dashboard() {
       )}
 
       {auditOpen && (
-        <div className="overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setAuditOpen(false); }}>
+        <div className="overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeAuditForm(); }}>
           <form className="form-dialog" onSubmit={submitAudit}>
-            <div className="drawer-header"><div><span className="eyebrow">AUDIT EVIDENCE</span><h2>Record an observation</h2></div><button type="button" className="icon-button" onClick={() => setAuditOpen(false)} aria-label="Close form"><X size={18} /></button></div>
+            <div className="drawer-header"><div><span className="eyebrow">AUDIT EVIDENCE</span><h2>Record an observation</h2></div><button type="button" className="icon-button" onClick={closeAuditForm} aria-label="Close form"><X size={18} /></button></div>
             <p className="form-intro">Enter a real captured response. AIShelf will calculate only the metrics supported by this evidence; incomplete categories remain unavailable.</p>
             <div className="form-grid"><label>Observation type<select value={auditForm.sourceType} onChange={(event) => setAuditForm({ ...auditForm, sourceType: event.target.value as "SIMULATED" | "EXTERNAL" })}><option value="SIMULATED">Simulated response</option><option value="EXTERNAL">External platform observation</option></select></label><label>Source / platform<input required placeholder="e.g. Internal simulation, platform name" value={auditForm.sourceName} onChange={(event) => setAuditForm({ ...auditForm, sourceName: event.target.value })} /></label></div>
             <label>Collection method<input required placeholder="e.g. Manually captured, API integration" value={auditForm.collectionMethod} onChange={(event) => setAuditForm({ ...auditForm, collectionMethod: event.target.value })} /></label>
-            <label>Exact shopping question<textarea required rows={2} placeholder="What was asked?" value={auditForm.question} onChange={(event) => setAuditForm({ ...auditForm, question: event.target.value })} /></label>
-            <label>Captured response<textarea required rows={4} placeholder="Paste the original captured response" value={auditForm.response} onChange={(event) => setAuditForm({ ...auditForm, response: event.target.value })} /></label>
+            <label>Exact shopping question<textarea required rows={2} maxLength={500} placeholder="What was asked?" value={auditForm.question} onChange={(event) => { clearAiReview(); setAuditForm({ ...auditForm, question: event.target.value }); }} /></label>
+            <label>Captured response<textarea required rows={4} maxLength={12_000} placeholder="Paste the original captured response" value={auditForm.response} onChange={(event) => { clearAiReview(); setAuditForm({ ...auditForm, response: event.target.value }); }} /></label>
+            <section className="ai-usage-card" aria-label="AI usage and cost safeguards" aria-live="polite">
+              <div className="ai-usage-heading"><strong>AI usage safeguards</strong><button type="button" className="text-link" onClick={() => void loadAiUsage()} disabled={aiUsageLoading}>Refresh</button></div>
+              {aiUsageLoading && <p>Loading shared usage…</p>}
+              {!aiUsageLoading && aiUsageError && <p className="ai-usage-error">{aiUsageError} AI analysis stays disabled until usage controls are available.</p>}
+              {aiUsage && (
+                <>
+                  <div className="ai-usage-metrics">
+                    <div><small>Estimated project spend</small><strong>{formatAiDollars(aiUsage.estimatedSpendUsd)} / {formatAiDollars(aiUsage.applicationBudgetUsd)}</strong></div>
+                    <div><small>Budget remaining</small><strong>{formatAiDollars(aiUsage.remainingBudgetUsd)}</strong></div>
+                    <div><small>Reserved for demonstrations</small><strong>{formatAiDollars(aiUsage.demoReserveUsd)}</strong></div>
+                    <div><small>Your requests this hour</small><strong>{aiUsage.requestsPerUserThisHour.find((member) => member.isCurrentUser)?.requestCount ?? 0} / {aiUsage.requestLimitPerUserPerHour}</strong></div>
+                  </div>
+                  <div className="ai-usage-members">
+                    {aiUsage.requestsPerUserThisHour.map((member) => (
+                      <span key={member.label}>{member.label}: {member.requestCount} request{member.requestCount === 1 ? "" : "s"}</span>
+                    ))}
+                  </div>
+                  {aiUsage.reservedSpendUsd > 0 && <small className="ai-usage-pending">{formatAiDollars(aiUsage.reservedSpendUsd)} is reserved for pending or uncertain requests.</small>}
+                </>
+              )}
+            </section>
+            <div className="ai-analyze-row">
+              <button type="button" className="button outline-button" onClick={analyzeAuditWithAi} disabled={!aiUsage || aiAnalyzing || saving || !auditForm.question.trim() || !auditForm.response.trim()}>
+                <Sparkles size={14} /> {aiAnalyzing ? "Analyzing…" : "Analyze with AI"}
+              </button>
+              <span>Draft analysis only; nothing is saved until you review and submit.</span>
+            </div>
+            {aiAnalysis && (
+              <section className="ai-review-panel" aria-label="Review AI audit suggestions">
+                <div className="ai-review-heading">
+                  <div><strong>Review suggested findings</strong><span>{aiAnalysis.model} · {aiAnalysis.usage.inputTokens} input / {aiAnalysis.usage.outputTokens} output / {aiAnalysis.usage.totalTokens} total tokens{aiAnalysis.usage.cached ? " · cached, no new API call" : ""}</span></div>
+                  <button type="button" className="button tiny-button" onClick={() => { clearAiReview(); void analyzeAuditWithAi(); }}>Analyze again</button>
+                </div>
+                <p className="ai-review-caution">AI suggestions can be wrong. Check the captured response and verified catalog details yourself. Claim outcomes start as “Needs verification”; selected findings are saved only when you submit this audit.</p>
+                <div className="ai-review-item">
+                  <span><strong>Brand mention</strong><small>{aiAnalysis.result.brandEvidence || "No supporting quote provided."}</small></span>
+                  <button type="button" className="button tiny-button" onClick={() => setAuditForm({ ...auditForm, brandMentioned: aiAnalysis.result.brandMentioned })}>
+                    Use {aiAnalysis.result.brandMentioned ? "mentioned" : "not mentioned"}
+                  </button>
+                </div>
+                {aiAnalysis.result.competitorMentions.length > 0 && <div className="ai-review-group">
+                  <strong>Competitor mentions</strong>
+                  {aiAnalysis.result.competitorMentions.map((mention, index) => <label className="ai-review-check" key={`${mention.competitor}-${index}`}>
+                    <input type="checkbox" checked={aiCompetitorSelected[index] ?? false} onChange={(event) => setAiCompetitorSelected((items) => items.map((selected, itemIndex) => itemIndex === index ? event.target.checked : selected))} />
+                    <span><strong>{mention.competitor} · {mention.mentionCount}</strong><small>{mention.evidence}</small></span>
+                  </label>)}
+                </div>}
+                {aiAnalysis.result.missingInformation.length > 0 && <div className="ai-review-group">
+                  <strong>Potentially missing product information</strong>
+                  {aiAnalysis.result.missingInformation.map((finding, index) => <label className="ai-review-check" key={`${finding.productId}-${finding.fieldName}-${index}`}>
+                    <input type="checkbox" checked={aiMissingSelected[index] ?? false} onChange={(event) => setAiMissingSelected((items) => items.map((selected, itemIndex) => itemIndex === index ? event.target.checked : selected))} />
+                    <span><strong>{finding.productName} · {finding.fieldName}</strong><small>{finding.reason} Suggested next step: {finding.recommendation}</small></span>
+                  </label>)}
+                </div>}
+                {aiAnalysis.result.claimFindings.length > 0 && <div className="ai-review-group">
+                  <strong>Product claim findings</strong>
+                  {aiAnalysis.result.claimFindings.map((finding, index) => <div className="ai-claim-review" key={`${finding.productId}-${finding.claim}-${index}`}>
+                    <label className="ai-review-check">
+                      <input type="checkbox" disabled={!finding.productId} checked={aiClaimSelected[index] ?? false} onChange={(event) => setAiClaimSelected((items) => items.map((selected, itemIndex) => itemIndex === index ? event.target.checked : selected))} />
+                      <span><strong>{finding.productName ?? "Product not identified"} · {finding.claim}</strong><small>AI suggests {finding.outcome.toLowerCase().replaceAll("_", " ")} · quote: “{finding.evidenceQuote || "No quote supplied"}” · catalog: {finding.verifiedValue || "No matching verified detail"}</small></span>
+                    </label>
+                    <label className="ai-outcome-select">Your reviewed outcome
+                      <select value={aiClaimOutcomes[index] ?? "UNVERIFIED"} onChange={(event) => setAiClaimOutcomes((items) => items.map((outcome, itemIndex) => itemIndex === index ? event.target.value : outcome))}>
+                        <option value="UNVERIFIED">Needs verification</option><option value="INACCURATE">Verified inaccurate</option><option value="ACCURATE">Verified accurate</option><option value="MISSING">Missing information</option>
+                      </select>
+                    </label>
+                    {!finding.productId && <small className="ai-disabled-note">This finding cannot be saved as a product claim because it is not linked to a catalog product.</small>}
+                  </div>)}
+                </div>}
+                {aiAnalysis.result.recommendations.length > 0 && <div className="ai-review-group">
+                  <strong>Recommendations</strong>
+                  {aiAnalysis.result.recommendations.map((recommendation, index) => <label className="ai-review-check" key={`${recommendation.title}-${index}`}>
+                    <input type="checkbox" checked={aiRecommendationSelected[index] ?? false} onChange={(event) => setAiRecommendationSelected((items) => items.map((selected, itemIndex) => itemIndex === index ? event.target.checked : selected))} />
+                    <span><strong>{recommendation.title} · {recommendation.priority} priority</strong><small>{recommendation.issue} {recommendation.recommendedAction}</small></span>
+                  </label>)}
+                </div>}
+              </section>
+            )}
             <label className="checkbox-label"><input type="checkbox" checked={auditForm.brandMentioned} onChange={(event) => setAuditForm({ ...auditForm, brandMentioned: event.target.checked })} /> The response mentioned my brand</label>
             <div className="form-grid"><label>Competitor observed (optional)<input placeholder="Competitor name" value={auditForm.competitor} onChange={(event) => setAuditForm({ ...auditForm, competitor: event.target.value })} /></label><label>Recorded mentions<input type="number" min="1" value={auditForm.competitorCount} onChange={(event) => setAuditForm({ ...auditForm, competitorCount: event.target.value })} /></label></div>
             <label className="checkbox-label"><input type="checkbox" checked={auditForm.addCheck} onChange={(event) => setAuditForm({ ...auditForm, addCheck: event.target.checked })} /> Add a product claim verification</label>
@@ -569,8 +826,8 @@ export default function Dashboard() {
               <label>Discrepancy type<select value={auditForm.discrepancyType} onChange={(event) => setAuditForm({ ...auditForm, discrepancyType: event.target.value })}><option value="incorrect_price">Incorrect price</option><option value="outdated_description">Outdated description</option><option value="unsupported_claim">Unsupported claim</option><option value="inaccurate_attribute">Inaccurate product attribute</option><option value="missing_information">Missing information</option></select></label>
               <label>Suggested correction<input value={auditForm.suggestedCorrection} onChange={(event) => setAuditForm({ ...auditForm, suggestedCorrection: event.target.value })} placeholder="Optional owner-reviewed next step" /></label>
             </div>}
-            <div className="modal-actions"><button type="button" className="button subtle-button" onClick={() => setAuditOpen(false)}>Cancel</button><button className="button primary" disabled={saving || (auditForm.addCheck && !auditForm.productId)}>{saving ? "Saving…" : "Save evidence and score"} <ArrowRight size={14} /></button></div>
-            <p className="form-footnote"><CircleHelp size={13} /> This prototype records owner-entered observations; it does not connect to an external AI platform or run prompts automatically.</p>
+            <div className="modal-actions"><button type="button" className="button subtle-button" onClick={closeAuditForm}>Cancel</button><button className="button primary" disabled={saving || aiAnalyzing || (auditForm.addCheck && !auditForm.productId)}>{saving ? "Saving…" : "Save evidence and score"} <ArrowRight size={14} /></button></div>
+            <p className="form-footnote"><CircleHelp size={13} /> AI analysis is limited to this local development demo. Suggestions are not saved until reviewed here; scores remain deterministic and do not use unverified model suggestions.</p>
           </form>
         </div>
       )}

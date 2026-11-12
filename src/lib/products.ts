@@ -8,6 +8,28 @@ export type ProductFields = {
   requiredFields: string;
 };
 
+function hasValue(value: unknown) {
+  if (typeof value === "string") return value.trim().length > 0;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.length > 0;
+  if (value && typeof value === "object") return Object.keys(value).length > 0;
+  return typeof value === "boolean";
+}
+
+function getFieldValue(product: ProductFields, field: string): unknown {
+  if (!field.startsWith("specifications.")) return product[field as keyof ProductFields];
+  try {
+    let value: unknown = JSON.parse(product.specifications);
+    for (const key of field.slice("specifications.".length).split(".")) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+      value = (value as Record<string, unknown>)[key];
+    }
+    return value;
+  } catch {
+    return undefined;
+  }
+}
+
 export function getProductCompleteness(products: ProductFields[]) {
   const snapshots: Array<{
     productId: string;
@@ -31,11 +53,17 @@ export function getProductCompleteness(products: ProductFields[]) {
       applicable = [];
     }
     for (const field of new Set([...fields, ...applicable])) {
-      const value = product[field as keyof ProductFields];
+      const value = getFieldValue(product, field);
       const isComplete = field === "price"
         ? typeof value === "number" && Number.isFinite(value) && value >= 0
-        : typeof value === "string" && value.trim().length > 0 && !(field === "specifications" && value === "{}");
-      const fieldValue = typeof value === "number" ? String(value) : typeof value === "string" ? value : "";
+        : field === "specifications"
+          ? typeof value === "string" && value.trim().length > 0 && value !== "{}"
+          : hasValue(value);
+      const fieldValue = value == null
+        ? ""
+        : typeof value === "string" || typeof value === "number" || typeof value === "boolean"
+          ? String(value)
+          : JSON.stringify(value) ?? "";
       required += 1;
       if (isComplete) completed += 1;
       snapshots.push({

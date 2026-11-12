@@ -24,3 +24,35 @@ test("checks base fields and product-specific required specifications", () => {
 test("does not score an empty product catalog as complete", () => {
   assert.deepEqual(getProductCompleteness([]), { completed: 0, required: 0, snapshots: [] });
 });
+
+test("checks required nested specification fields individually", () => {
+  const result = getProductCompleteness([{
+    id: "p2",
+    name: "Knit top",
+    description: "A rib-knit top",
+    price: 45,
+    category: "Tops",
+    imageUrl: "https://example.test/top.jpg",
+    specifications: JSON.stringify({ sizes: ["S", "M"], material: "cotton" }),
+    requiredFields: JSON.stringify([
+      "specifications.material",
+      "specifications.care",
+      "specifications.sizes",
+    ]),
+  }]);
+
+  assert.equal(result.required, 8);
+  assert.equal(result.completed, 7);
+  assert.equal(
+    result.snapshots.find((field) => field.fieldName === "specifications.sizes")?.fieldValue,
+    '["S","M"]',
+  );
+  assert.equal(
+    result.snapshots.find((field) => field.fieldName === "specifications.material")?.completed,
+    true,
+  );
+  assert.equal(
+    result.snapshots.find((field) => field.fieldName === "specifications.care")?.completed,
+    false,
+  );
+});

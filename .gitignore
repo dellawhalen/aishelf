@@ -15,10 +15,15 @@
 
 # next.js
 /.next/
+/.next-functional-*/
+/.next-maison-elle-*/
+/.tsconfig-functional-*.json
+/.tsconfig-maison-elle-*.json
 /out/
 
 # production
 /build
+/src/generated/prisma/
 
 # misc
 .DS_Store
@@ -36,6 +41,8 @@ yarn-error.log*
 dev.db
 dev.db-journal
 .test-tmp
+.test-tmp-maison
+.test-tmp-import
 
 # vercel
 .vercel
@@ -43,3 +50,4 @@ dev.db-journal
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+.clerk/

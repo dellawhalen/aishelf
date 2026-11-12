@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { ensureLocalWorkspace, LOCAL_BRAND_ID, LOCAL_ORGANIZATION_ID } from "@/lib/workspace";
+import { getWorkspaceBrandAccess, LOCAL_ORGANIZATION_ID } from "@/lib/workspace";
 
 type RecommendationInput = {
   evidenceRef: string;
@@ -18,10 +18,12 @@ type RecommendationInput = {
 
 export async function POST(request: Request) {
   try {
-    await ensureLocalWorkspace();
+    const workspace = await getWorkspaceBrandAccess(request);
+    if (!workspace.authorized) return workspace.response;
+    const brandId = workspace.brandId;
     const { auditId } = await request.json() as { auditId?: string };
     const audit = await prisma.audit.findFirst({
-      where: { id: auditId, organizationId: LOCAL_ORGANIZATION_ID, brandId: LOCAL_BRAND_ID },
+      where: { id: auditId, organizationId: LOCAL_ORGANIZATION_ID, brandId },
       include: {
         accuracyChecks: true,
         responses: { include: { competitorMentions: true } },
@@ -116,7 +118,7 @@ export async function POST(request: Request) {
         data: {
           ...candidate,
           organizationId: LOCAL_ORGANIZATION_ID,
-          brandId: LOCAL_BRAND_ID,
+          brandId,
           auditId: audit.id,
         },
       })),

@@ -3,36 +3,50 @@
   "version": "0.1.0",
   "private": true,
   "engines": {
-    "node": ">=20.9.0"
+    "node": ">=22.18.0"
   },
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --hostname localhost",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
+    "postinstall": "prisma generate",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:deploy": "prisma migrate deploy",
     "db:dev": "prisma migrate dev",
-    "test": "rm -rf .test-tmp && tsc src/lib/scoring.ts src/lib/products.ts --target es2020 --module commonjs --outDir .test-tmp --skipLibCheck && node --test tests/*.test.mjs; result=$?; rm -rf .test-tmp; exit $result"
+    "test": "rm -rf .test-tmp && tsc src/lib/scoring.ts src/lib/products.ts src/lib/workspace-authorization.ts --target es2020 --module commonjs --outDir .test-tmp --skipLibCheck && node --test tests/products.test.mjs tests/scoring.test.mjs tests/workspace-authorization.test.mjs; result=$?; rm -rf .test-tmp; exit $result",
+    "test:ai-audit": "rm -rf .test-tmp-ai && tsc src/lib/ai-audit-schema.ts src/lib/ai-usage-policy.ts --target es2020 --module commonjs --outDir .test-tmp-ai --skipLibCheck && node --test tests/ai-audit.test.mjs tests/ai-usage-policy.test.mjs; result=$?; rm -rf .test-tmp-ai; exit $result",
+    "test:functional": "tsx --test tests/functional.test.mjs",
+    "test:maison-elle": "rm -rf .test-tmp-maison && tsc src/lib/scoring.ts src/lib/products.ts --target es2020 --module commonjs --outDir .test-tmp-maison --skipLibCheck && tsx --test tests/maison-elle.test.mjs; result=$?; rm -rf .test-tmp-maison; exit $result",
+    "import:maison-elle": "rm -rf .test-tmp-import && tsc src/lib/scoring.ts src/lib/products.ts --target es2020 --module commonjs --outDir .test-tmp-import --skipLibCheck && tsx scripts/import-maison-elle.mjs; result=$?; rm -rf .test-tmp-import; exit $result"
   },
   "dependencies": {
-    "@prisma/client": "^6.19.3",
+    "@prisma/adapter-pg": "7.10.1",
+    "@prisma/client": "7.10.1",
     "lucide-react": "^1.61.0",
     "next": "16.4.3",
+    "next-auth": "^5.0.0-beta.32",
+    "openai": "^6.49.0",
+    "pg": "^8.16.3",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@next/env": "16.4.3",
+    "@prisma/adapter-better-sqlite3": "7.10.1",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "better-sqlite3": "^12.0.0",
     "eslint": "^9",
     "eslint-config-next": "16.4.3",
-    "prisma": "^6.19.3",
+    "prisma": "7.10.1",
     "tailwindcss": "^4",
+    "tsx": "^4.20.6",
     "typescript": "^5"
   }
 }
