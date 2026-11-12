@@ -37,6 +37,8 @@ jobs:
       - run: npm run db:deploy
       - run: npm test
       - run: npm run test:functional
+      - run: npx next typegen
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run build
+      
